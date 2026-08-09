@@ -22,13 +22,26 @@ grows.
 |---|---|
 | [`hardware/`](hardware/) | Parts list, wiring, jar geometry, sensor placement |
 | [`firmware/`](firmware/) | Arduino sketch for the ESP32 (measure + WiFi upload) |
+| [`server/`](server/) | Reference server: stores readings, runs the peak detection, serves the dashboard |
 | [`dashboard/`](dashboard/) | Single-file web dashboard: live curve, jar view, CSV export |
 | [`docs/`](docs/) | HTTP API contract and the peak-detection algorithm |
 
-The server that stores the time series is part of a separate private application
-and is not included here. [`docs/api.md`](docs/api.md) documents the HTTP contract
-in full, so the firmware and dashboard can be pointed at any backend that
-implements it.
+## Getting it running
+
+Node 18 or newer, and no dependencies to install.
+
+```bash
+cd server
+node server.mjs                 # http://localhost:8090
+node setup.mjs "Kitchen jar"    # in another terminal
+```
+
+`setup.mjs` prints the two values to paste into the firmware config, and the
+dashboard URL to open. Flash the sketch from [`firmware/`](firmware/), and
+readings start arriving within a minute.
+
+You can also point the firmware and dashboard at your own backend instead — the
+HTTP contract in [`docs/api.md`](docs/api.md) is all it needs to implement.
 
 ## How a session works
 
@@ -63,18 +76,21 @@ slot in the lid helps.
 
 **ESP32 WiFi is 2.4 GHz only.** It will not see a 5 GHz network.
 
-## Status
-
-A working prototype. The measurement chain, the upload, the peak detection and the
-dashboard all run; the enclosure is still a lid held on with a rubber band, and the
-temperature sensor is wired into the design but not yet fitted.
-
 ## Licence
 
-No licence has been chosen yet, so default copyright applies. If you want to use
-any of this, open an issue and ask.
+[PolyForm Noncommercial 1.0.0](LICENSE.md) — **use it freely for anything
+noncommercial**: build one for your own kitchen, take the code apart, change it,
+share your version. Hobby projects, personal experiments, teaching and research
+are all fine.
 
-## A note on language
+Commercial use is not covered. If you want to sell something based on this, ask
+first by opening an issue.
 
-The docs and code comments are in English. The dashboard's user interface is in
-Norwegian, since that is what it was built for.
+## Status
+
+A working prototype, not a product. The measurement chain, the upload, the peak
+detection and the dashboard all run. The enclosure is still a lid held on with a
+rubber band, and the temperature sensor is designed in but not yet fitted.
+
+Expect to spend some time on sensor placement for your own jar — see the blind
+zone note above. That is the part that catches people out.

@@ -6,6 +6,9 @@ secrets.h
 # Vendored ECharts, if you choose a local copy over the CDN
 dashboard/echarts.min.js
 
+# Reference server storage — contains lid tokens and your recorded sessions
+server/data/
+
 # Recorded sessions
 *.csv
 

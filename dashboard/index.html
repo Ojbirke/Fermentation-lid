@@ -1,0 +1,835 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fermentation Lid — dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:       #f9f9f7;
+    --surface:    #fcfcfb;
+    --ink:        #0b0b0b;
+    --ink-2:      #52514e;
+    --muted:      #898781;
+    --grid:       #e1e0d9;
+    --axis:       #c3c2b7;
+    --border:     rgba(11,11,11,0.10);
+    --series:     #2a78d6;   /* height (blue, slot 1) */
+    --series-2:   #d95926;   /* temp (orange, slot 2) */
+    --critical:   #d03b3b;
+    --good-text:  #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page:       #0d0d0d;
+      --surface:    #1a1a19;
+      --ink:        #ffffff;
+      --ink-2:      #c3c2b7;
+      --muted:      #898781;
+      --grid:       #2c2c2a;
+      --axis:       #383835;
+      --border:     rgba(255,255,255,0.10);
+      --series:     #3987e5;
+      --series-2:   #d95926;
+      --critical:   #d03b3b;
+      --good-text:  #0ca30c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px;
+    background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--ink-2); font-size: 13px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .tile .label { color: var(--muted); font-size: 12px; }
+  .tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .tile .value small { font-size: 13px; font-weight: 400; color: var(--ink-2); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; margin-bottom: 12px;
+  }
+  .chart-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 6px; }
+  .chart-head h2 { font-size: 13px; font-weight: 600; margin: 0; color: var(--ink-2); }
+  .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .controls .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 13px; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.active { border-color: var(--series); color: var(--series); font-weight: 600; }
+  button.mini { font-size: 11px; padding: 1px 7px; }
+  .note { color: var(--muted); font-size: 12px; }
+  .warn { color: var(--critical); font-size: 12px; }
+  #riseChart { width: 100%; height: 380px; }
+  #tempChart { width: 100%; height: 200px; }
+  .jar-wrap { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+  #jarSvg { flex: 0 0 auto; }
+  #jarSvg svg { height: 320px; width: auto; max-width: 100%; }
+  .jar-stats { flex: 1 1 220px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px 16px; }
+  .jar-stats div .k { color: var(--muted); font-size: 12px; }
+  .jar-stats div .v { font-size: 18px; font-weight: 600; }
+  .jar-stats div .v small { font-size: 12px; font-weight: 400; color: var(--ink-2); }
+  .jar-fields { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); }
+  .jar-fields input {
+    font: inherit; width: 68px; padding: 3px 6px; margin: 0 3px;
+    background: var(--page); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 5px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🫙 Fermentation Lid</h1>
+    <span class="sub" id="lidName">…</span>
+    <span class="sub" id="lastSeen"></span>
+  </header>
+
+  <div class="controls">
+    <button data-range="fed">Since feeding</button>
+    <button data-range="6">6 h</button>
+    <button data-range="24" class="active">24 h</button>
+    <button data-range="72">3 d</button>
+    <button data-range="168">7 d</button>
+    <span class="spacer"></span>
+    <button id="csvBtn" title="Download the readings in view as CSV">⬇ CSV</button>
+    <button id="fedBtn" title="Logs a feeding and resets the baseline to the current level (median of the last 3 readings)">🍞 Fed now — reset</button>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="label">Phase</div><div class="value" id="tPhase">–</div><div class="label" id="tPhaseSub"></div></div>
+    <div class="tile"><div class="label">Last reading</div><div class="value" id="tLast">–</div><div class="label" id="tLastAge"></div></div>
+    <div class="tile"><div class="label">Height now</div><div class="value" id="tNow">–</div></div>
+    <div class="tile"><div class="label">Peak in view</div><div class="value" id="tPeak">–</div></div>
+    <div class="tile"><div class="label">Temperature</div><div class="value" id="tTemp">–</div></div>
+    <div class="tile"><div class="label">Baseline</div><div class="value" id="tBase">–</div><div class="label" id="tFedAt"></div></div>
+    <div class="tile"><div class="label">Dropouts in view</div><div class="value" id="tDrop">–</div></div>
+  </div>
+
+  <div class="card">
+    <div class="chart-head">
+      <h2 id="riseTitle">Rise curve (mm)</h2>
+      <button class="mini" id="smoothBtn" title="Smoothed curve: rolling median (7) + moving average (3) — the same smoothing the peak detector sees">∿ smoothed</button>
+      <button class="mini" id="rawBtn" title="Show/hide the raw readings">• raw</button>
+      <button class="mini" id="addMarkBtn" title="Add a vertical marker. Drag it into place; double-click to rename (empty name deletes it)">+ marker</button>
+      <button class="mini" id="resetZoomBtn" title="Reset zoom">⟲ auto</button>
+      <span class="note" style="margin-left:auto">wheel = zoom time · shift+wheel = zoom height · drag = pan · handles below = stretch the time axis</span>
+    </div>
+    <div id="riseChart"></div>
+    <div class="note" id="riseNote"></div>
+  </div>
+
+  <div class="card">
+    <div class="chart-head">
+      <h2>The jar</h2>
+      <button class="mini" id="jarCfgBtn" title="Set the jar dimensions and sensor distance">⚙ dimensions</button>
+      <span class="note" id="jarHint"></span>
+    </div>
+    <div id="jarCfgForm" style="display:none; margin-bottom:10px">
+      <div class="jar-fields">
+        <label>Inner height <input id="jarH" type="number" min="10" max="600" step="1"> mm</label>
+        <label>Inner diameter <input id="jarD" type="number" min="10" max="400" step="1"> mm</label>
+        <label>Sensor → bottom <input id="jarS" type="number" min="10" max="1000" step="1"> mm</label>
+        <button class="mini" id="jarSaveBtn">Save</button>
+        <button class="mini" id="jarUseNowBtn" title="Use the latest reading as the distance to the bottom (do this with an EMPTY jar)">Empty jar = now</button>
+      </div>
+    </div>
+    <div class="jar-wrap">
+      <div id="jarSvg"></div>
+      <div class="jar-stats" id="jarStats"></div>
+    </div>
+  </div>
+
+  <div class="card" id="tempCard" style="display:none">
+    <div class="chart-head"><h2>Temperature (°C)</h2></div>
+    <div id="tempChart"></div>
+  </div>
+
+  <div class="note" id="status">Loading…</div>
+</div>
+
+<!-- ECharts (Apache-2.0). Swap for a local copy if you would rather not use a CDN. -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.min.js"></script>
+<script>
+(() => {
+  const qs = new URLSearchParams(location.search);
+  const LID    = qs.get("lid")    || localStorage.getItem("lid.id")     || "";
+  const DEVICE = qs.get("device") || localStorage.getItem("lid.device") || "";
+  if (!LID || !DEVICE) {
+    document.getElementById("status").innerHTML =
+      'Open this page as <code>?lid=&lt;lidId&gt;&amp;device=&lt;deviceId&gt;</code>. ' +
+      'Both ids come from provisioning and pairing — see docs/api.md.';
+    document.getElementById("status").className = "warn";
+    return;
+  }
+  localStorage.setItem("lid.id", LID);
+  localStorage.setItem("lid.device", DEVICE);
+
+  const $ = (id) => document.getElementById(id);
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const fmtDayTime = (ms) => new Date(ms).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  const fmtTime = (ms) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+  let rangeH = 24;            // hours, or "fed" = since the last feeding
+  let curve = null;
+  let smoothOn = localStorage.getItem("lid.smooth") !== "0";
+  let rawOn = localStorage.getItem("lid.raw") !== "0";
+
+  // Manual marker lines (vertical annotations), stored per lid in the browser.
+  let marks = [];
+  try { marks = JSON.parse(localStorage.getItem(`lid.marks.${LID}`) || "[]"); } catch {}
+  const saveMarks = () => localStorage.setItem(`lid.marks.${LID}`, JSON.stringify(marks));
+
+  // --- Data ----------------------------------------------------------------
+
+  async function fetchCurve() {
+    let since;
+    if (rangeH === "fed") {
+      const fedTs = curve?.lastFedAt ? Math.floor(new Date(curve.lastFedAt).getTime() / 1000) : null;
+      since = fedTs || Math.floor(Date.now() / 1000) - 24 * 3600;
+    } else {
+      since = Math.floor(Date.now() / 1000) - rangeH * 3600;
+    }
+    const res = await fetch(`/api/lid/${LID}/curve?since=${since}`, { headers: { "x-device-id": DEVICE } });
+    if (!res.ok) throw new Error(`${res.status} ${(await res.json().catch(() => ({}))).error || ""}`);
+    return res.json();
+  }
+
+  // With no baseline the curve is shown relative to the largest distance in view.
+  function toSeries(c) {
+    const valid = c.samples.filter(s => s.distanceMm >= 0);
+    if (!valid.length) return { pts: [], usedBaseline: c.baselineMm != null };
+    const usedBaseline = c.baselineMm != null;
+    const ref = usedBaseline ? c.baselineMm : Math.max(...valid.map(s => s.distanceMm));
+    const pts = valid.map(s => ({ ts: s.ts, v: usedBaseline ? s.heightMm : ref - s.distanceMm, temp: s.tempC }));
+    return { pts, usedBaseline };
+  }
+
+  // The same smoothing the server-side peak detection uses: median(7) + mean(3).
+  function smoothSeries(pts) {
+    const med = (arr) => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+    const m = pts.map((p, i) => ({ ts: p.ts, v: med(pts.slice(Math.max(0, i - 6), i + 1).map(q => q.v)) }));
+    return m.map((p, i) => {
+      const w = m.slice(Math.max(0, i - 2), i + 1);
+      return { ts: p.ts, v: w.reduce((a, q) => a + q.v, 0) / w.length };
+    });
+  }
+
+  // ECharts data [ms, value]; a null point breaks the line at gaps > 3x the median interval.
+  function toEcharts(pts) {
+    const gaps = [];
+    for (let i = 1; i < pts.length; i++) gaps.push(pts[i].ts - pts[i - 1].ts);
+    gaps.sort((a, b) => a - b);
+    const medGap = gaps[Math.floor(gaps.length / 2)] || 60;
+    const out = [];
+    for (let i = 0; i < pts.length; i++) {
+      if (i > 0 && pts[i].ts - pts[i - 1].ts > 3 * medGap) out.push([(pts[i - 1].ts + 1) * 1000, null]);
+      out.push([pts[i].ts * 1000, Math.round(pts[i].v * 10) / 10]);
+    }
+    return out;
+  }
+
+  // --- Charts --------------------------------------------------------------
+
+  const GRID = { left: 52, right: 16, top: 18, bottom: 68 };
+  let riseChart = null, tempChart = null;
+
+  function baseOption(gridBottom) {
+    return {
+      animation: false,
+      backgroundColor: "transparent",
+      grid: { ...GRID, bottom: gridBottom },
+      textStyle: { fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
+      xAxis: {
+        type: "time",
+        axisLine: { lineStyle: { color: css("--axis") } },
+        axisLabel: { color: css("--muted"), hideOverlap: true },
+        splitLine: { show: true, lineStyle: { color: css("--grid") } },
+      },
+      yAxis: {
+        type: "value",
+        scale: true,
+        axisLine: { show: false },
+        axisLabel: { color: css("--muted") },
+        splitLine: { lineStyle: { color: css("--grid") } },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "cross", label: { backgroundColor: css("--ink-2") } },
+        backgroundColor: css("--surface"),
+        borderColor: css("--border"),
+        textStyle: { color: css("--ink"), fontSize: 12 },
+      },
+    };
+  }
+
+  function dataZooms() {
+    return [
+      // throttle: 0 → zoom/pan tracks the mouse with no lag (the dataset is small)
+      { type: "inside", xAxisIndex: 0, filterMode: "none", throttle: 0, zoomOnMouseWheel: true, moveOnMouseMove: true },
+      { type: "inside", yAxisIndex: 0, filterMode: "none", throttle: 0, zoomOnMouseWheel: "shift", moveOnMouseMove: true },
+      {
+        type: "slider", xAxisIndex: 0, filterMode: "none", height: 26, bottom: 8,
+        backgroundColor: "transparent", borderColor: css("--border"),
+        fillerColor: css("--series") + "22", handleStyle: { color: css("--series") },
+        dataBackground: { lineStyle: { color: css("--axis") }, areaStyle: { color: css("--grid") } },
+        selectedDataBackground: { lineStyle: { color: css("--series") }, areaStyle: { color: css("--series") + "33" } },
+        textStyle: { color: css("--muted") }, labelFormatter: (v) => fmtTime(v),
+      },
+    ];
+  }
+
+  function renderRise(c, pts, usedBaseline, analysis) {
+    if (!riseChart) {
+      riseChart = echarts.init($("riseChart"), null, { renderer: "canvas" });
+      riseChart.on("dataZoom", renderMarks);
+      window.addEventListener("resize", () => { riseChart.resize(); tempChart?.resize(); renderMarks(); });
+      bindMarkDrag();
+    }
+
+    const series = [];
+    if (rawOn) {
+      series.push({
+        name: "Raw", type: "line", showSymbol: false, sampling: "lttb",
+        lineStyle: { width: smoothOn ? 1 : 2, opacity: smoothOn ? 0.4 : 1, color: css("--series") },
+        itemStyle: { color: css("--series") },
+        data: toEcharts(pts),
+      });
+    }
+    if (smoothOn) {
+      series.push({
+        name: "Smoothed", type: "line", showSymbol: false,
+        lineStyle: { width: 2.5, color: css("--series") },
+        itemStyle: { color: css("--series") },
+        data: toEcharts(smoothSeries(pts)),
+      });
+    }
+    if (!series.length) {
+      series.push({ name: "Raw", type: "line", showSymbol: false, lineStyle: { color: css("--series") }, data: toEcharts(pts) });
+    }
+
+    // Reference line (baseline = 0) and the automatic peak marker from the detector
+    const markLines = [];
+    if (usedBaseline) {
+      markLines.push({ yAxis: 0, label: { show: false }, lineStyle: { color: css("--axis"), type: "dashed" } });
+    }
+    if (analysis?.peakReached && analysis.peakTime) {
+      markLines.push({
+        xAxis: analysis.peakTime * 1000,
+        label: { show: true, formatter: `topp ${analysis.peakHeightMm} mm`, position: "insideEndTop", color: css("--critical"), fontSize: 11 },
+        lineStyle: { color: css("--critical"), type: "dashed", width: 1.5 },
+      });
+    }
+    series[series.length - 1].markLine = {
+      silent: true, symbol: "none", animation: false, data: markLines,
+    };
+    if (analysis?.peakReached && analysis.peakTime) {
+      series[series.length - 1].markPoint = {
+        symbol: "circle", symbolSize: 9, animation: false,
+        itemStyle: { color: "transparent", borderColor: css("--critical"), borderWidth: 2 },
+        label: { show: false },
+        data: [{ coord: [analysis.peakTime * 1000, analysis.peakHeightMm] }],
+      };
+    }
+
+    riseChart.setOption({
+      ...baseOption(GRID.bottom),
+      dataZoom: dataZooms(),
+      legend: { show: false },
+      tooltip: {
+        ...baseOption(GRID.bottom).tooltip,
+        formatter: (ps) => {
+          const t = fmtDayTime(ps[0].value[0]);
+          const rows = ps.filter(p => p.value[1] != null)
+            .map(p => `${p.marker} ${p.seriesName}: <b>${p.value[1]} mm</b>`).join("<br>");
+          return `<span style="color:${css("--muted")}">${t}</span><br>${rows}`;
+        },
+      },
+      series,
+    }, { replaceMerge: ["series", "dataZoom"] });
+
+    renderMarks();
+  }
+
+  function renderTemp(pts) {
+    const tp = pts.filter(p => p.temp != null).map(p => ({ ts: p.ts, v: p.temp }));
+    $("tempCard").style.display = tp.length ? "" : "none";
+    if (!tp.length) return;
+    if (!tempChart) tempChart = echarts.init($("tempChart"), null, { renderer: "canvas" });
+    tempChart.setOption({
+      ...baseOption(34),
+      dataZoom: [{ type: "inside", xAxisIndex: 0, filterMode: "none" }],
+      tooltip: { ...baseOption(34).tooltip, valueFormatter: (v) => `${v} °C` },
+      series: [{
+        name: "Temp", type: "line", showSymbol: false,
+        lineStyle: { width: 2, color: css("--series-2") }, itemStyle: { color: css("--series-2") },
+        data: toEcharts(tp),
+      }],
+    }, { replaceMerge: ["series"] });
+  }
+
+  // --- Manual marker lines (ECharts graphic, draggable) ---------------------
+
+  function plotRect() {
+    return {
+      x: GRID.left, y: GRID.top,
+      w: riseChart.getWidth() - GRID.left - GRID.right,
+      h: riseChart.getHeight() - GRID.top - GRID.bottom,
+    };
+  }
+
+  let markPix = [];        // [{ i, x }] — pixel positions for hit-testing
+  let renderedMarks = 0;   // how many markers the chart holds from the previous render
+
+  // Markers are drawn as FLAT graphic elements with stable ids. (A group with
+  // $action:"replace" was silently discarded by ECharts — nothing reached the
+  // canvas.) Elements are always emitted; markers outside the view are hidden
+  // with `ignore`, because ECharts merges by id and would otherwise leave stale
+  // lines behind.
+  function renderMarks() {
+    if (!riseChart) return;
+    const r = plotRect();
+    const els = [];
+    markPix = [];
+    marks.forEach((m, i) => {
+      const px = riseChart.convertToPixel({ xAxisIndex: 0 }, m.ts * 1000);
+      const ok = px != null && isFinite(px) && px >= r.x - 1 && px <= r.x + r.w + 1;
+      const x = ok ? px : -100;
+      if (ok) markPix.push({ i, x: px });
+      els.push({
+        id: `mk-line-${i}`, type: "line", silent: true, ignore: !ok, z: 100,
+        shape: { x1: x, y1: r.y, x2: x, y2: r.y + r.h },
+        style: { stroke: css("--ink-2"), lineWidth: i === dragIdx ? 2.5 : 1.5 },
+      });
+      els.push({
+        id: `mk-name-${i}`, type: "text", silent: true, ignore: !ok, z: 100,
+        x: x + 5, y: r.y + 2 + (i % 3) * 14,
+        style: { text: m.name, fill: css("--ink-2"), fontSize: 11, fontWeight: 600, fontFamily: "system-ui, sans-serif" },
+      });
+      els.push({
+        id: `mk-time-${i}`, type: "text", silent: true, ignore: !ok, z: 100,
+        x: x + 5, y: r.y + r.h - 13,
+        style: { text: fmtTime(m.ts * 1000), fill: css("--muted"), fontSize: 10, fontFamily: "system-ui, sans-serif" },
+      });
+    });
+    for (let i = marks.length; i < renderedMarks; i++) {
+      els.push({ id: `mk-line-${i}`, $action: "remove" });
+      els.push({ id: `mk-name-${i}`, $action: "remove" });
+      els.push({ id: `mk-time-${i}`, $action: "remove" });
+    }
+    renderedMarks = marks.length;
+    riseChart.setOption({ graphic: els });
+  }
+
+  const markAt = (x) => {
+    let best = -1, bestD = 10;
+    for (const mp of markPix) { const d = Math.abs(mp.x - x); if (d < bestD) { bestD = d; best = mp.i; } }
+    return best;
+  };
+
+  // Calling setOption directly inside a zrender event is re-entrant (ECharts
+  // rebuilds while dispatching), so rendering during a drag is deferred to the
+  // next animation frame, at most once per frame.
+  let framePending = false;
+  function scheduleMarks(extra) {
+    if (extra) pendingOption = extra;
+    if (framePending) return;
+    framePending = true;
+    requestAnimationFrame(() => {
+      framePending = false;
+      if (pendingOption) { riseChart.setOption(pendingOption); pendingOption = null; }
+      renderMarks();
+    });
+  }
+  let pendingOption = null;
+
+  let dragIdx = -1;
+
+  // Events are taken in the CAPTURE phase on the container div, i.e. before
+  // ECharts/zrender sees them. That lets a marker drag call stopPropagation so
+  // dataZoom does not pan at the same time — without toggling components on and off.
+  function bindMarkDrag() {
+    const host = $("riseChart");
+    const xOf = (ev) => ev.clientX - host.getBoundingClientRect().left;
+
+    host.addEventListener("pointerdown", (ev) => {
+      const i = markAt(xOf(ev));
+      if (i < 0) return;
+      dragIdx = i;
+      try { host.setPointerCapture(ev.pointerId); } catch {}
+      ev.stopPropagation(); ev.preventDefault();
+      scheduleMarks();
+    }, true);
+
+    host.addEventListener("pointermove", (ev) => {
+      if (dragIdx < 0) { host.style.cursor = markAt(xOf(ev)) >= 0 ? "ew-resize" : ""; return; }
+      ev.stopPropagation(); ev.preventDefault();
+      const ms = riseChart.convertFromPixel({ xAxisIndex: 0 }, xOf(ev));
+      if (ms != null && isFinite(ms)) { marks[dragIdx].ts = Math.round(ms / 1000); scheduleMarks(); }
+    }, true);
+
+    const endDrag = (ev) => {
+      if (dragIdx < 0) return;
+      ev.stopPropagation();
+      saveMarks(); dragIdx = -1; scheduleMarks();
+    };
+    host.addEventListener("pointerup", endDrag, true);
+    host.addEventListener("pointercancel", endDrag, true);
+
+    host.addEventListener("dblclick", (ev) => {
+      const i = markAt(xOf(ev));
+      if (i < 0) return;
+      ev.stopPropagation();
+      setTimeout(() => {   // leave the event loop before prompt/setOption
+        const name = prompt("Marker name (empty = delete):", marks[i].name);
+        if (name === null) return;
+        if (!name.trim()) marks.splice(i, 1); else marks[i].name = name.trim().slice(0, 30);
+        saveMarks(); renderMarks();
+      }, 0);
+    }, true);
+  }
+
+  // --- Jar view -------------------------------------------------------
+  // An absolute level needs the distance from the sensor to the BOTTOM of the jar
+  // (measured once with an empty jar). Then: level above bottom = sensorToBottom
+  // − distanceMm. The baseline (the freshly fed level) gives the rise factor.
+
+  const JAR_KEY = `lid.jar.${LID}`;
+  let jar = null;
+  try { jar = JSON.parse(localStorage.getItem(JAR_KEY) || "null"); } catch {}
+
+  function jarMetrics(c) {
+    if (!jar?.heightMm || !jar?.diameterMm || !jar?.sensorToBottomMm) return null;
+    const lastRaw = [...c.samples].reverse().find(s => s.distanceMm >= 0);
+    if (!lastRaw) return null;
+    const levelMm = jar.sensorToBottomMm - lastRaw.distanceMm;
+    const fedLevelMm = c.baselineMm != null ? jar.sensorToBottomMm - c.baselineMm : null;
+    const peakLevelMm = c.analysis?.peakReached && c.baselineMm != null
+      ? fedLevelMm + c.analysis.peakHeightMm : null;
+    const r = jar.diameterMm / 20;                       // cm
+    const volumeMl = Math.PI * r * r * Math.max(0, levelMm) / 10;
+    return {
+      levelMm, fedLevelMm, peakLevelMm, volumeMl,
+      fillPct: (levelMm / jar.heightMm) * 100,
+      headroomMm: lastRaw.distanceMm,                    // sensor → overflate
+      riseFactor: fedLevelMm > 0 ? levelMm / fedLevelMm : null,
+    };
+  }
+
+  function renderJar(c) {
+    const m = jarMetrics(c);
+    if (!m) {
+      $("jarSvg").innerHTML = "";
+      $("jarStats").innerHTML = `<div class="note">Set the jar dimensions (⚙ dimensions) to see level, fill and volume.<br>
+        «Sensor → bottom» is measured once with an <b>empty jar</b> and the lid on — the sensor
+        may hang down inside the jar, in which case the number is smaller than the jar height.</div>`;
+      $("jarHint").textContent = "";
+      return;
+    }
+    // Everything is drawn TO SCALE (the same mm→px for height and width). The
+    // drawing covers both the jar and the sensor, because the sensor may hang
+    // DOWN into the jar (as in the test rig) or sit above the rim (a proper lid).
+    const DRAW_H = 250;                                       // px for the whole height
+    const drawTopMm = Math.max(jar.heightMm, jar.sensorToBottomMm) + 8;
+    const pxPerMm = DRAW_H / drawTopMm;
+    const jarPxH = jar.heightMm * pxPerMm;
+    const jarW = jar.diameterMm * pxPerMm;
+    const padL = 40, padR = 84, padT = 22, padB = 20;         // room for the scale and labels
+    const x0 = padL, y1 = padT + DRAW_H, y0 = y1 - jarPxH;    // y0 = the rim
+    const W = padL + jarW + padR, H = padT + DRAW_H + padB;
+    const wall = 3;
+    const yOf = (mm) => y1 - mm * pxPerMm;
+    const sensorY = yOf(jar.sensorToBottomMm);
+    const sensorInside = jar.sensorToBottomMm < jar.heightMm;
+    const maxLevelMm = jar.sensorToBottomMm - 40;             // VL53L1X cannot measure closer
+
+    // mm scale on the left: a round step size, about 5 ticks
+    const step = [10, 20, 25, 50, 100].find(s => jar.heightMm / s <= 6) || 100;
+    let scale = "";
+    for (let mm = 0; mm <= jar.heightMm; mm += step) {
+      scale += `<line x1="${x0 - 5}" x2="${x0}" y1="${yOf(mm)}" y2="${yOf(mm)}" stroke="${css("--axis")}"/>
+        <text x="${x0 - 8}" y="${yOf(mm) + 3.5}" font-size="9" text-anchor="end" fill="${css("--muted")}">${mm}</text>`;
+    }
+
+    // Level lines with collision avoidance — labels are pushed apart, since the
+    // fed level and the current level nearly coincide right after a feeding.
+    const wanted = [
+      { mm: jar.sensorToBottomMm, color: css("--ink-2"), label: "sensor", noLine: true },
+      { mm: maxLevelMm, color: css("--critical"), label: "max measurable", dash: "2 3" },
+      { mm: m.peakLevelMm, color: css("--critical"), label: "peak", dash: "3 3" },
+      { mm: m.levelMm, color: css("--series"), label: `now ${Math.round(m.levelMm)} mm`, dash: "" },
+      { mm: m.fedLevelMm, color: css("--muted"), label: "fed", dash: "3 3" },
+    ].filter(l => l.mm != null && l.mm >= 0 && l.mm <= drawTopMm)
+     .map(l => ({ ...l, y: yOf(l.mm) }))
+     .sort((a, b) => a.y - b.y);
+    let prevY = -99;
+    for (const l of wanted) {                 // at least 12 px between labels
+      l.labelY = Math.max(l.y, prevY + 12);
+      prevY = l.labelY;
+    }
+    const levelLines = wanted.map(l => `
+      ${l.noLine ? "" : `<line x1="${x0 - 3}" x2="${x0 + jarW + 6}" y1="${l.y}" y2="${l.y}"
+            stroke="${l.color}" stroke-width="${l.dash ? 1.2 : 1.8}" stroke-dasharray="${l.dash || ""}"/>`}
+      ${Math.abs(l.labelY - l.y) > 2 ? `<line x1="${x0 + jarW + 6}" x2="${x0 + jarW + 10}" y1="${l.y}" y2="${l.labelY}" stroke="${l.color}" stroke-width="0.8" opacity="0.6"/>` : ""}
+      <text x="${x0 + jarW + 12}" y="${l.labelY + 3.5}" font-size="10" fill="${l.color}">${l.label}</text>`).join("");
+
+    // Blind zone: the 40 mm nearest the sensor give invalid readings
+    const deadTop = Math.max(y0, sensorY);
+    const deadBot = yOf(Math.max(0, maxLevelMm));
+
+    $("jarSvg").innerHTML = `
+      <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <clipPath id="jarInner"><rect x="${x0}" y="${y0}" width="${jarW}" height="${jarPxH}" rx="5"/></clipPath>
+        </defs>
+        <!-- inside of the jar -->
+        <rect x="${x0}" y="${y0}" width="${jarW}" height="${jarPxH}" rx="5" fill="${css("--page")}"/>
+        <g clip-path="url(#jarInner)">
+          <!-- the sensor's blind zone (nearest 40 mm) -->
+          <rect x="${x0}" y="${deadTop}" width="${jarW}" height="${Math.max(0, deadBot - deadTop)}"
+                fill="${css("--critical")}" fill-opacity="0.10"/>
+          <!-- the starter -->
+          <rect x="${x0}" y="${yOf(m.levelMm)}" width="${jarW}" height="${y1 - yOf(m.levelMm)}"
+                fill="${css("--series")}" fill-opacity="0.55"/>
+        </g>
+        <!-- jar walls -->
+        <rect x="${x0}" y="${y0}" width="${jarW}" height="${jarPxH}" rx="5"
+              fill="none" stroke="${css("--ink-2")}" stroke-width="${wall}"/>
+        <!-- lid resting on the rim -->
+        <rect x="${x0 - 7}" y="${y0 - 9}" width="${jarW + 14}" height="9" rx="2"
+              fill="${css("--axis")}" stroke="${css("--ink-2")}" stroke-width="1.5"/>
+        <!-- the sensor where it actually sits (may hang down into the jar) -->
+        ${sensorInside ? `<line x1="${x0 + jarW / 2}" x2="${x0 + jarW / 2}" y1="${y0}" y2="${sensorY}"
+              stroke="${css("--ink-2")}" stroke-width="2"/>` : ""}
+        <rect x="${x0 + jarW / 2 - 9}" y="${sensorY - 4}" width="18" height="8" rx="1.5"
+              fill="${css("--ink-2")}"/>
+        <line x1="${x0 - 3}" x2="${x0 + jarW + 6}" y1="${sensorY}" y2="${sensorY}"
+              stroke="${css("--ink-2")}" stroke-width="0.8" stroke-dasharray="2 3" opacity="0.7"/>
+        ${scale}
+        ${levelLines}
+        <text x="${x0 + jarW / 2}" y="${H - 5}" font-size="9" text-anchor="middle" fill="${css("--muted")}">⌀ ${jar.diameterMm} mm</text>
+      </svg>`;
+
+    const jarVolumeMl = Math.PI * Math.pow(jar.diameterMm / 20, 2) * jar.heightMm / 10;
+    const tile = (k, v) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
+    $("jarStats").innerHTML =
+      tile("Level above bottom", `${Math.round(m.levelMm)} <small>mm</small>`) +
+      tile("Fill", `${m.fillPct.toFixed(0)} <small>% of ${Math.round(jarVolumeMl)} ml</small>`) +
+      tile("Starter volume", `${Math.round(m.volumeMl)} <small>ml</small>`) +
+      tile("Rise factor", m.riseFactor ? `${m.riseFactor.toFixed(2)}× <small>since feeding</small>` : "–") +
+      tile("Headroom", `${Math.round(jar.heightMm - m.levelMm)} <small>mm to the rim</small>`) +
+      tile("Clearance to sensor", `${m.headroomMm} <small>mm</small>`) +
+      tile("Max measurable", `${Math.round(maxLevelMm)} <small>mm (sensor − 40)</small>`);
+
+    // VL53L1X is unreliable below ~40 mm
+    if (m.headroomMm < 55) {
+      $("jarHint").innerHTML = `<span style="color:var(--critical)">⚠ only ${m.headroomMm} mm to the sensor — below ~40 mm the readings become invalid</span>`;
+    } else if (m.fillPct > 85) {
+      $("jarHint").innerHTML = `<span style="color:var(--critical)">⚠ the jar is nearly full</span>`;
+    } else $("jarHint").textContent = "";
+  }
+
+  $("jarCfgBtn").addEventListener("click", () => {
+    const f = $("jarCfgForm");
+    const showing = f.style.display !== "none";
+    f.style.display = showing ? "none" : "";
+    if (!showing) {
+      $("jarH").value = jar?.heightMm ?? "";
+      $("jarD").value = jar?.diameterMm ?? "";
+      $("jarS").value = jar?.sensorToBottomMm ?? "";
+    }
+  });
+  $("jarSaveBtn").addEventListener("click", () => {
+    const h = Number($("jarH").value), d = Number($("jarD").value), s = Number($("jarS").value);
+    if (!(h > 0 && d > 0 && s > 0)) { alert("Fill in all three dimensions."); return; }
+    // The sensor may sit above the rim (a proper lid) OR hang down into the jar
+    // (the test rig) — both are valid. Only obvious typos are rejected.
+    if (s < h * 0.3 || s > h * 4) { alert("\u00abSensor \u2192 bottom\u00bb looks implausible next to the jar height — check the value."); return; }
+    jar = { heightMm: h, diameterMm: d, sensorToBottomMm: s };
+    localStorage.setItem(JAR_KEY, JSON.stringify(jar));
+    $("jarCfgForm").style.display = "none";
+    if (curve) renderJar(curve);
+  });
+  $("jarUseNowBtn").addEventListener("click", () => {
+    const lastRaw = curve ? [...curve.samples].reverse().find(s => s.distanceMm >= 0) : null;
+    if (!lastRaw) { alert("No valid reading yet."); return; }
+    if (!confirm(`Set \u00absensor \u2192 bottom\u00bb = ${lastRaw.distanceMm} mm?\n\nOnly do this with an EMPTY jar and the lid on.`)) return;
+    $("jarS").value = lastRaw.distanceMm;
+  });
+
+  // --- Page ---------------------------------------------------------
+
+  const PHASES = {
+    insufficient_data: ["Collecting data…", ""],
+    lag: ["Lag phase", "waiting for the rise"],
+    rising: ["Rising 📈", ""],
+    peaked: ["AT PEAK 🍞", "bake now!"],
+    declining: ["Declining", "past the peak"],
+  };
+
+  function renderPage() {
+    const c = curve;
+    $("lidName").textContent = c.name || "(unnamed)";
+    const ageMin = c.lastSeenAt ? Math.round((Date.now() - new Date(c.lastSeenAt).getTime()) / 60000) : null;
+    $("lastSeen").textContent = ageMin == null ? "" : ageMin <= 2 ? "• live" : `• last seen ${ageMin} min ago`;
+    $("lastSeen").style.color = ageMin != null && ageMin > 10 ? "var(--critical)" : "var(--good-text)";
+
+    const { pts, usedBaseline } = toSeries(c);
+    const a = c.analysis;
+
+    if (a) {
+      const [label, sub] = PHASES[a.phase] || [a.phase, ""];
+      $("tPhase").textContent = label;
+      let subTxt = sub;
+      if (a.peakReached && a.timeToPeakS != null) subTxt = `peak after ${(a.timeToPeakS / 3600).toFixed(1)} h`;
+      else if (a.phase === "rising" && a.currentSlopeMmPerMin != null) subTxt = `${(a.currentSlopeMmPerMin * 60).toFixed(1)} mm/t`;
+      $("tPhaseSub").textContent = subTxt;
+      $("tPhase").style.color = a.phase === "peaked" ? "var(--good-text)" : "";
+    } else {
+      $("tPhase").textContent = "–";
+      $("tPhaseSub").textContent = "set a baseline first";
+    }
+
+    const lastRaw = [...c.samples].reverse().find(s => s.distanceMm >= 0);
+    if (lastRaw) {
+      const ageS = Math.max(0, Math.round(Date.now() / 1000 - lastRaw.ts));
+      $("tLast").innerHTML = `${lastRaw.distanceMm} <small>mm away</small>`;
+      $("tLastAge").textContent = ageS < 90 ? `${ageS} s ago` : `${Math.round(ageS / 60)} min ago`;
+      $("tLastAge").style.color = ageS > 300 ? "var(--critical)" : "var(--good-text)";
+    } else { $("tLast").textContent = "–"; $("tLastAge").textContent = ""; }
+    $("tFedAt").textContent = c.lastFedAt ? `fed ${fmtDayTime(new Date(c.lastFedAt).getTime())}` : "";
+
+    const last = pts[pts.length - 1];
+    $("tNow").innerHTML = last ? `${Math.round(last.v * 10) / 10} <small>mm</small>` : "–";
+    $("tPeak").innerHTML = pts.length ? `${Math.max(...pts.map(p => p.v))} <small>mm</small>` : "–";
+    const lastTemp = [...pts].reverse().find(p => p.temp != null);
+    $("tTemp").innerHTML = lastTemp ? `${lastTemp.temp} <small>°C</small>` : "<small>(no sensor)</small>";
+    $("tBase").innerHTML = c.baselineMm != null ? `${c.baselineMm} <small>mm</small>` : "<small>not set</small>";
+    $("tDrop").textContent = c.samples.filter(s => s.distanceMm === -1).length;
+
+    $("riseTitle").textContent = usedBaseline ? "Rise curve (mm above baseline)" : "Rise curve (mm, relative — no baseline set)";
+    $("riseNote").textContent = usedBaseline ? "" : "Tip: press \u00abFed now\u00bb right after feeding so height is measured from the right zero.";
+
+    renderRise(c, pts, usedBaseline, a);
+    renderTemp(pts);
+    renderJar(c);
+  }
+
+  async function refresh() {
+    try {
+      curve = await fetchCurve();
+      renderPage();
+      $("status").textContent = `Updated ${new Date().toLocaleTimeString("en-GB")} · ${curve.samples.length} readings in view · refreshes every 15 s`;
+      $("status").className = "note";
+    } catch (e) {
+      $("status").textContent = `Could not load data: ${e.message}`;
+      $("status").className = "warn";
+    }
+  }
+
+  // --- Buttons -------------------------------------------------------------
+
+  document.querySelectorAll("[data-range]").forEach(btn => btn.addEventListener("click", () => {
+    if (btn.dataset.range === "fed" && !curve?.lastFedAt) { alert("No feeding logged yet — press \u00abFed now\u00bb first."); return; }
+    document.querySelectorAll("[data-range]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    rangeH = btn.dataset.range === "fed" ? "fed" : Number(btn.dataset.range);
+    riseChart?.dispatchAction({ type: "dataZoom", start: 0, end: 100 });
+    refresh();
+  }));
+
+  const toggle = (btn, get, set) => {
+    btn.classList.toggle("active", get());
+    btn.addEventListener("click", () => {
+      set(!get());
+      btn.classList.toggle("active", get());
+      if (curve) renderPage();
+    });
+  };
+  toggle($("smoothBtn"), () => smoothOn, (v) => { smoothOn = v; localStorage.setItem("lid.smooth", v ? "1" : "0"); });
+  toggle($("rawBtn"), () => rawOn, (v) => { rawOn = v; localStorage.setItem("lid.raw", v ? "1" : "0"); });
+
+  $("resetZoomBtn").addEventListener("click", () => {
+    riseChart?.dispatchAction({ type: "dataZoom", start: 0, end: 100 });
+    riseChart?.dispatchAction({ type: "dataZoom", dataZoomIndex: 1, start: 0, end: 100 });
+    renderMarks();
+  });
+
+  $("addMarkBtn").addEventListener("click", () => {
+    if (!riseChart) { alert("No chart yet."); return; }
+    const name = prompt("Marker name:", "fed");
+    if (!name || !name.trim()) return;
+    const r = plotRect();
+    const ms = riseChart.convertFromPixel({ xAxisIndex: 0 }, r.x + r.w / 2);
+    marks.push({ ts: Math.round(ms / 1000), name: name.trim().slice(0, 30) });
+    saveMarks(); renderMarks();
+  });
+
+  $("csvBtn").addEventListener("click", () => {
+    if (!curve || !curve.samples.length) { alert("Nothing to export."); return; }
+    const rows = [["tid_iso", "unix_ts", "distance_mm", "height_mm", "temp_c"]];
+    for (const s of curve.samples) {
+      rows.push([new Date(s.ts * 1000).toISOString(), s.ts, s.distanceMm,
+        s.heightMm != null ? s.heightMm : "", s.tempC != null ? s.tempC : ""]);
+    }
+    const blob = new Blob(["﻿" + rows.map(r => r.join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const aEl = document.createElement("a");
+    aEl.href = URL.createObjectURL(blob);
+    aEl.download = `lid-${(curve.name || "data").replace(/[^\w-]/g, "_")}-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}.csv`;
+    aEl.click();
+    URL.revokeObjectURL(aEl.href);
+  });
+
+  $("fedBtn").addEventListener("click", async () => {
+    const lastRaw = curve ? [...curve.samples].reverse().find(s => s.distanceMm >= 0) : null;
+    const hint = lastRaw ? `Last reading: ${lastRaw.distanceMm} mm. ` : "";
+    if (!confirm(`${hint}Log a feeding now and reset the baseline to the current level?\n\n(Wait until \u00abLast reading\u00bb shows the level AFTER feeding before pressing OK.)`)) return;
+    try {
+      const res = await fetch(`/api/lid/${LID}/fed`, {
+        method: "POST", headers: { "Content-Type": "application/json", "x-device-id": DEVICE },
+      });
+      const j = await res.json();
+      if (res.status === 409) { alert(`The feeding was not logged.\n\n${j.message}`); return; }
+      if (!res.ok) throw new Error(j.error || res.status);
+      // Automatic marker at the feeding (draggable/renameable like any other)
+      const fedTs = Math.floor(new Date(j.lastFedAt).getTime() / 1000);
+      if (!marks.some(m => Math.abs(m.ts - fedTs) < 60 && m.name === "fed")) {
+        marks.push({ ts: fedTs, name: "fed" });
+        saveMarks();
+      }
+      await refresh();
+      if (j.cleaned > 0) {
+        $("status").textContent = `Feeding logged · baseline ${j.baselineMm} mm · removed ${j.cleaned} readings taken with the lid off`;
+      }
+    } catch (e) { alert(`Could not log the feeding: ${e.message}`); }
+  });
+
+  // Theme change: rebuild the charts with the new colours
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    riseChart?.dispose(); tempChart?.dispose();
+    riseChart = null; tempChart = null;
+    if (curve) renderPage();
+  });
+
+  // Debug handle for the console
+  window.__lid = () => ({ marks, markPix, dragIdx, framePending, rangeH, hasChart: !!riseChart });
+
+  refresh();
+  setInterval(refresh, 15000);
+})();
+</script>
+</body>
+</html>

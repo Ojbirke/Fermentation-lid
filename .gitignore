@@ -1,0 +1,15 @@
+# Never commit real credentials — fill these in locally only
+secrets.h
+*.local.*
+.env
+
+# Vendored ECharts, if you choose a local copy over the CDN
+dashboard/echarts.min.js
+
+# Recorded sessions
+*.csv
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/

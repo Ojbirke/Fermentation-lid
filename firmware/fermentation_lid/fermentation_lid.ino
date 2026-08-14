@@ -226,6 +226,11 @@ void setup() {
   delay(200);
   // The reset reason is worth its weight in gold when a board reboots on its own:
   // brownout points at the power supply, panic/watchdog at the firmware.
+  // __DATE__/__TIME__ are set at COMPILE time. If the boot line shows an old
+  // timestamp, the IDE built a different file from the one you are editing —
+  // which is otherwise almost impossible to notice.
+  Serial.print("# firmware "); Serial.print(FW_VERSION);
+  Serial.print(" built "); Serial.print(__DATE__); Serial.print(" "); Serial.println(__TIME__);
   Serial.print("# boot, reset reason="); Serial.println((int)esp_reset_reason());
 
   // Zero the clock ONCE at boot. The ESP32's RTC survives a reset, and a stale

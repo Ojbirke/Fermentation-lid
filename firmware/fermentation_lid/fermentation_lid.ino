@@ -28,7 +28,15 @@ const char* LID_TOKEN  = "YOUR_LID_TOKEN";        // issued when the lid is prov
 
 const uint32_t MEASURE_INTERVAL_S = 60;   // one reading per minute
 const size_t   POST_EVERY = 1;            // upload after N readings (raise it to save power)
-const char*    FW_VERSION = "lid-2.0";
+const char*    FW_VERSION = "lid-2.1";
+
+const int PIN_SDA = 21;
+const int PIN_SCL = 22;
+
+// Recovery escalation, counted in consecutive failed measurement windows.
+// At one reading a minute that is roughly 3 and 10 minutes.
+const uint8_t FAILS_BEFORE_BUS_RECOVER = 3;
+const uint8_t FAILS_BEFORE_RESTART     = 10;
 
 VL53L1X sensor;
 
@@ -39,26 +47,59 @@ const size_t BUF_CAP = 240;
 Sample buf[BUF_CAP];
 size_t bufLen = 0;
 
-// --- Sensor -----------------------------------------------------------------
+// --- Sensor and recovery -----------------------------------------------------
 
-void initSensor() {
-  sensor.setTimeout(500);
-  while (!sensor.init()) { Serial.println("# sensor init failed, retrying..."); delay(200); }
-  sensor.setDistanceMode(VL53L1X::Long);
-  sensor.setMeasurementTimingBudget(50000);
-  sensor.startContinuous(100);
+// Returns whether the sensor came up. This MUST be bounded: an unbounded retry
+// loop here hangs the whole firmware, and then the lid stops reporting entirely
+// rather than reporting that it is blind. (That bug cost a night of data.)
+bool initSensor(uint8_t tries = 3) {
+  for (uint8_t i = 0; i < tries; i++) {
+    sensor.setTimeout(500);
+    if (sensor.init()) {
+      sensor.setDistanceMode(VL53L1X::Long);
+      sensor.setMeasurementTimingBudget(50000);
+      sensor.startContinuous(100);
+      return true;
+    }
+    Serial.print("# sensor init failed ("); Serial.print(i + 1); Serial.println(")");
+    delay(200);
+  }
+  return false;
 }
 
-// Median of n readings. Raw noise is around ±3 mm, and a median also throws away
-// the occasional wild single reading. Returns -1 if nothing valid came back.
+// Frees the bus when a slave is holding SDA low: clock out up to 9 bits by hand
+// and finish with a STOP. This is the only way to clear a wedged I2C bus without
+// power-cycling the sensor.
+void i2cBusRecover() {
+  Serial.println("# i2c: attempting bus recovery");
+  Wire.end();
+  pinMode(PIN_SDA, INPUT_PULLUP);
+  pinMode(PIN_SCL, OUTPUT);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(PIN_SCL, LOW);  delayMicroseconds(5);
+    digitalWrite(PIN_SCL, HIGH); delayMicroseconds(5);
+    if (digitalRead(PIN_SDA) == HIGH) break;   // the slave let go
+  }
+  // STOP condition: SDA low -> SCL high -> SDA high
+  pinMode(PIN_SDA, OUTPUT);
+  digitalWrite(PIN_SDA, LOW);  delayMicroseconds(5);
+  digitalWrite(PIN_SCL, HIGH); delayMicroseconds(5);
+  digitalWrite(PIN_SDA, HIGH); delayMicroseconds(5);
+
+  Wire.begin(PIN_SDA, PIN_SCL);
+  Wire.setClock(100000);
+}
+
+// Median of n readings, or -1 if none were valid. Raw noise is around ±3 mm, and
+// a median also throws away the occasional wild single reading. Does no recovery
+// itself — escalation lives in loop() so it can never block the measuring cycle.
 int readMedian(int n) {
-  int v[15], c = 0, fails = 0;
+  int v[15], c = 0;
   for (int i = 0; i < n; i++) {
     int mm = sensor.read();
-    if (!sensor.timeoutOccurred() && mm > 0) v[c++] = mm; else fails++;
+    if (!sensor.timeoutOccurred() && mm > 0) v[c++] = mm;
     delay(30);
   }
-  if (fails >= n) { Wire.begin(); Wire.setClock(100000); initSensor(); return -1; }
   if (c == 0) return -1;
   for (int i = 0; i < c - 1; i++)
     for (int j = i + 1; j < c; j++)
@@ -145,12 +186,17 @@ bool postBatch() {
 // --- Main loop --------------------------------------------------------------
 
 unsigned long lastMeasure = 0;
+uint8_t consecutiveFails = 0;
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin();
+  Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(100000);
-  initSensor();
+  if (!initSensor()) {
+    Serial.println("# sensor silent at boot - trying bus recovery");
+    i2cBusRecover();
+    initSensor();   // if this fails too, loop() escalation takes over
+  }
   wifiEnsure();
   ntpEnsure();
   Serial.println("min,mm");   // CSV header for the Serial log
@@ -162,6 +208,24 @@ void loop() {
 
     int mm = readMedian(7);
     Serial.print(millis() / 60000.0, 1); Serial.print(","); Serial.println(mm);
+
+    // Escalating recovery. The -1 is still buffered and sent, so the server can
+    // see that the lid is alive but blind — that is useful information, and far
+    // better than the lid going silent.
+    if (mm < 0) {
+      consecutiveFails++;
+      if (consecutiveFails == FAILS_BEFORE_BUS_RECOVER) {
+        i2cBusRecover();
+        initSensor();
+      } else if (consecutiveFails >= FAILS_BEFORE_RESTART) {
+        Serial.println("# sensor unrecoverable - restarting the board");
+        postBatch();          // flush what we have before rebooting
+        delay(500);
+        ESP.restart();
+      }
+    } else {
+      consecutiveFails = 0;
+    }
 
     if (!timeSynced()) ntpEnsure();   // in case NTP never succeeded at boot
     if (timeSynced()) {

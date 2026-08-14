@@ -32,13 +32,18 @@ min,mm
 - **Buffers up to 240 readings** (4 hours) in RAM when the network is unavailable
   and sends them when it comes back. Re-sending is safe because the server ignores
   duplicates.
-- **Re-initialises the sensor** when an entire measurement window fails.
+- **Recovers from a wedged sensor** in escalating steps. Three failed windows in
+  a row trigger an I2C bus recovery (clocking out a slave that is holding SDA
+  low); ten trigger a board restart, after flushing the buffer. Invalid readings
+  are still recorded and sent throughout, so the server can tell the difference
+  between "the lid is blind" and "the lid is gone".
 - **Prints CSV to Serial** regardless, so you can log without a server at all.
 
 ## Notes
 
 - `-1` in the output means no valid reading. An occasional one is normal; a steady
-  stream of them usually means a loose wire.
+  stream of them usually means a loose wire. If they persist, the board restarts
+  itself after ten minutes rather than sitting there blind.
 - WiFi credentials are compiled in. That is fine for a device on your own bench;
   provisioning over BLE or a captive portal would be the next step for something
   you hand to someone else. Do not commit real credentials.

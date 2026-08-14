@@ -18,6 +18,7 @@
 #include <VL53L1X.h>
 #include <time.h>
 #include <sys/time.h>
+#include <esp_system.h>
 
 // ==== CONFIGURATION =========================================================
 // Fill these in. Do not commit real credentials to a public repository.
@@ -29,7 +30,7 @@ const char* LID_TOKEN  = "YOUR_LID_TOKEN";        // issued when the lid is prov
 
 const uint32_t MEASURE_INTERVAL_S = 60;   // one reading per minute
 const size_t   POST_EVERY = 1;            // upload after N readings (raise it to save power)
-const char*    FW_VERSION = "lid-2.1";
+const char*    FW_VERSION = "lid-2.2";
 
 const int PIN_SDA = 21;
 const int PIN_SCL = 22;
@@ -43,10 +44,24 @@ VL53L1X sensor;
 
 // Readings wait here until they have been accepted by the server, so a WiFi
 // dropout does not punch a hole in the curve. 4 hours at one per minute.
-struct Sample { uint32_t ts; int16_t mm; };
+//
+// Samples are stored against millis(), NOT wall-clock time. That way readings can
+// be buffered even before the clock is set (booting with no network), and are
+// converted to real timestamps when they are sent. The alternative — refusing to
+// buffer until the clock is set — turns a network outage into data loss, which is
+// exactly what the buffer exists to prevent.
+struct Sample { uint32_t msAt; int16_t mm; };
 const size_t BUF_CAP = 240;
 Sample buf[BUF_CAP];
 size_t bufLen = 0;
+
+bool    clockValid = false;
+int64_t bootEpoch  = 0;   // unix seconds corresponding to millis() == 0
+
+void markClockSynced() {
+  clockValid = true;
+  bootEpoch = (int64_t)time(nullptr) - (int64_t)(millis() / 1000);
+}
 
 // --- Sensor and recovery -----------------------------------------------------
 
@@ -134,21 +149,28 @@ bool timeSynced() { return time(nullptr) > 1700000000; }
 // which once stamped every reading two hours early, silently shifting the whole
 // curve. After zeroing, a plausible time can only have come from the network.
 void ntpSync() {
-  struct timeval tv = { 0, 0 };
-  settimeofday(&tv, nullptr);
+  if (WiFi.status() != WL_CONNECTED) return;   // pointless without a network
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  for (int i = 0; i < 40 && !timeSynced(); i++) delay(500);
-  Serial.println(timeSynced() ? "# ntp: ok" : "# ntp: FAILED - not buffering until the clock is set");
+  for (int i = 0; i < 20 && !timeSynced(); i++) delay(500);
+  if (timeSynced()) { markClockSynced(); Serial.println("# ntp: ok"); }
+  else Serial.println("# ntp: failed - readings keep buffering");
 }
 
+// Retry while the clock is unset, but no more than every 5 minutes: each attempt
+// blocks for up to 10 seconds, and with no network that is wasted time.
+unsigned long lastNtpTry = 0;
 void ntpEnsure() {
-  if (!timeSynced()) ntpSync();
+  if (clockValid) return;
+  if (lastNtpTry && millis() - lastNtpTry < 5UL * 60 * 1000) return;
+  lastNtpTry = millis();
+  ntpSync();
 }
 
 // --- Upload -----------------------------------------------------------------
 
 bool postBatch() {
   if (bufLen == 0) return true;
+  if (!clockValid) return false;   // keep buffering until we can stamp correctly
   if (!wifiEnsure()) return false;
 
   size_t n = bufLen < 100 ? bufLen : 100;   // the API accepts up to 500 per request
@@ -158,7 +180,7 @@ bool postBatch() {
   for (size_t i = 0; i < n; i++) {
     if (i) body += ",";
     body += "{\"ts\":";
-    body += String(buf[i].ts);
+    body += String((uint32_t)(bootEpoch + buf[i].msAt / 1000));
     body += ",\"distanceMm\":";
     body += String(buf[i].mm);
     body += "}";
@@ -201,6 +223,18 @@ uint8_t consecutiveFails = 0;
 
 void setup() {
   Serial.begin(115200);
+  delay(200);
+  // The reset reason is worth its weight in gold when a board reboots on its own:
+  // brownout points at the power supply, panic/watchdog at the firmware.
+  Serial.print("# boot, reset reason="); Serial.println((int)esp_reset_reason());
+
+  // Zero the clock ONCE at boot. The ESP32's RTC survives a reset, and a stale
+  // value from before it looks exactly as "synced" as a fresh NTP result — that
+  // once stamped every reading two hours early. After zeroing, a plausible time
+  // can only have come from the network.
+  struct timeval tv = { 0, 0 };
+  settimeofday(&tv, nullptr);
+
   Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(100000);
   if (!initSensor()) {
@@ -209,7 +243,7 @@ void setup() {
     initSensor();   // if this fails too, loop() escalation takes over
   }
   wifiEnsure();
-  ntpSync();    // always a real sync at boot, never an inherited RTC value
+  ntpSync();
   Serial.println("min,mm");   // CSV header for the Serial log
 }
 
@@ -238,14 +272,13 @@ void loop() {
       consecutiveFails = 0;
     }
 
-    if (!timeSynced()) ntpEnsure();   // in case NTP never succeeded at boot
-    if (timeSynced()) {
-      if (bufLen == BUF_CAP) { memmove(buf, buf + 1, (BUF_CAP - 1) * sizeof(Sample)); bufLen--; }
-      buf[bufLen].ts = (uint32_t)time(nullptr);
-      buf[bufLen].mm = (int16_t)mm;
-      bufLen++;
-    }
+    // ALWAYS buffer, clock or no clock. Timestamping happens at send time.
+    if (bufLen == BUF_CAP) { memmove(buf, buf + 1, (BUF_CAP - 1) * sizeof(Sample)); bufLen--; }
+    buf[bufLen].msAt = millis();
+    buf[bufLen].mm   = (int16_t)mm;
+    bufLen++;
 
+    ntpEnsure();   // no-op once the clock is set; otherwise one try per 5 min
     if (bufLen >= POST_EVERY) postBatch();
   }
 }

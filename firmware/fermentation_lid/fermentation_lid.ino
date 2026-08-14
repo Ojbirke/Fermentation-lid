@@ -17,6 +17,7 @@
 #include <Wire.h>
 #include <VL53L1X.h>
 #include <time.h>
+#include <sys/time.h>
 
 // ==== CONFIGURATION =========================================================
 // Fill these in. Do not commit real credentials to a public repository.
@@ -127,11 +128,21 @@ bool timeSynced() { return time(nullptr) > 1700000000; }
 
 // Readings are timestamped on the device, so NTP has to succeed at least once.
 // The internal clock keeps running afterwards, including through WiFi outages.
-void ntpEnsure() {
-  if (timeSynced()) return;
+//
+// The clock MUST be zeroed first. The ESP32's RTC survives a reset, and a stale
+// value from before the reset looks exactly as "synced" as a fresh NTP result —
+// which once stamped every reading two hours early, silently shifting the whole
+// curve. After zeroing, a plausible time can only have come from the network.
+void ntpSync() {
+  struct timeval tv = { 0, 0 };
+  settimeofday(&tv, nullptr);
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  for (int i = 0; i < 30 && !timeSynced(); i++) delay(500);
-  if (timeSynced()) Serial.println("# ntp: ok");
+  for (int i = 0; i < 40 && !timeSynced(); i++) delay(500);
+  Serial.println(timeSynced() ? "# ntp: ok" : "# ntp: FAILED - not buffering until the clock is set");
+}
+
+void ntpEnsure() {
+  if (!timeSynced()) ntpSync();
 }
 
 // --- Upload -----------------------------------------------------------------
@@ -198,7 +209,7 @@ void setup() {
     initSensor();   // if this fails too, loop() escalation takes over
   }
   wifiEnsure();
-  ntpEnsure();
+  ntpSync();    // always a real sync at boot, never an inherited RTC value
   Serial.println("min,mm");   // CSV header for the Serial log
 }
 

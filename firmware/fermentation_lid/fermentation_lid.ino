@@ -144,10 +144,8 @@ bool timeSynced() { return time(nullptr) > 1700000000; }
 // Readings are timestamped on the device, so NTP has to succeed at least once.
 // The internal clock keeps running afterwards, including through WiFi outages.
 //
-// The clock MUST be zeroed first. The ESP32's RTC survives a reset, and a stale
-// value from before the reset looks exactly as "synced" as a fresh NTP result —
-// which once stamped every reading two hours early, silently shifting the whole
-// curve. After zeroing, a plausible time can only have come from the network.
+// The clock is zeroed at boot (see setup) so that a stale value retained across
+// a reset cannot pass for a fresh NTP result.
 void ntpSync() {
   if (WiFi.status() != WL_CONNECTED) return;   // pointless without a network
   configTime(0, 0, "pool.ntp.org", "time.google.com");
@@ -234,9 +232,10 @@ void setup() {
   Serial.print("# boot, reset reason="); Serial.println((int)esp_reset_reason());
 
   // Zero the clock ONCE at boot. The ESP32's RTC survives a reset, and a stale
-  // value from before it looks exactly as "synced" as a fresh NTP result — that
-  // once stamped every reading two hours early. After zeroing, a plausible time
-  // can only have come from the network.
+  // value from before it looks exactly as "synced" as a fresh NTP result. After
+  // zeroing, a plausible time can only have come from the network. Hygiene
+  // rather than a fix: a two-hour offset blamed on this turned out to live in a
+  // reporting script that read a `timestamp without time zone` column as local.
   struct timeval tv = { 0, 0 };
   settimeofday(&tv, nullptr);
 
